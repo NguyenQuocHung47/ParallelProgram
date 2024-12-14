@@ -10,6 +10,9 @@
 #include <string>
 #include <stdexcept>
 
+
+#include <iomanip> // For formatting
+
 // Function to parse a CSV file into a 2D vector
 std::vector<std::vector<double>> load_csv(const std::string& filepath, bool normalize = false) {
     std::ifstream file(filepath);
@@ -261,6 +264,84 @@ double evaluate(NeuralNetwork& model, const std::vector<std::vector<double>>& im
     return static_cast<double>(correct) / images.size(); // Return accuracy as a fraction
 }
 
+// Function to save the model to a file
+void save_model(const NeuralNetwork& model, const std::string& filepath) {
+    std::ofstream file(filepath, std::ios::out | std::ios::binary);
+    if (!file.is_open()) throw std::runtime_error("Cannot open file to save model: " + filepath);
+
+    for (const auto& layer : model.layers) {
+        // Save weights
+        for (const auto& row : layer.weights) {
+            for (double weight : row) {
+                file.write(reinterpret_cast<const char*>(&weight), sizeof(weight));
+            }
+        }
+
+        // Save biases
+        for (double bias : layer.biases) {
+            file.write(reinterpret_cast<const char*>(&bias), sizeof(bias));
+        }
+    }
+
+    file.close();
+    std::cout << "Model saved to " << filepath << std::endl;
+}
+
+// Function to load the model from a file
+void load_model(NeuralNetwork& model, const std::string& filepath) {
+    std::ifstream file(filepath, std::ios::in | std::ios::binary);
+    if (!file.is_open()) throw std::runtime_error("Cannot open file to load model: " + filepath);
+
+    for (auto& layer : model.layers) {
+        // Load weights
+        for (auto& row : layer.weights) {
+            for (double& weight : row) {
+                file.read(reinterpret_cast<char*>(&weight), sizeof(weight));
+            }
+        }
+
+        // Load biases
+        for (double& bias : layer.biases) {
+            file.read(reinterpret_cast<char*>(&bias), sizeof(bias));
+        }
+    }
+
+    file.close();
+    std::cout << "Model loaded from " << filepath << std::endl;
+}
+
+// Helper function to display an image (assumes 28x28 grayscale)
+void display_image(const std::vector<double>& image) {
+    const int size = 28;
+    for (int i = 0; i < size; ++i) {
+        for (int j = 0; j < size; ++j) {
+            if (image[i * size + j] > 0.5) std::cout << "##"; // Threshold for visual representation
+            else std::cout << "..";
+        }
+        std::cout << std::endl;
+    }
+}
+
+// Demonstration: Predict and display the first 10 samples
+void demonstrate_predictions(NeuralNetwork& model, const std::vector<std::vector<double>>& images,
+    const std::vector<std::vector<double>>& labels) {
+    const int num_samples = 20;
+
+    for (int i = 0; i < num_samples; ++i) {
+        const auto& image = images[i];
+        const auto& label = labels[i];
+
+        int predicted_class = predict(model, image);
+        int true_class = std::distance(label.begin(), std::max_element(label.begin(), label.end()));
+
+        std::cout << "Sample " << i + 1 << ":" << std::endl;
+        display_image(image);
+        std::cout << "Predicted Label: " << predicted_class << ", Actual Label: " << true_class << std::endl;
+        std::cout << "-----------------------------" << std::endl;
+    }
+}
+
+
 int main() {
 
     std::vector<std::vector<double>> train_images, train_labels;
@@ -271,20 +352,35 @@ int main() {
     const std::string test_images_path = "x_test.csv";
     const std::string test_labels_path = "y_test.csv";
 
+    const std::string model_path = "nn_model.bin";
+
     // Load and preprocess the dataset
     load_and_preprocess_dataset_csv(train_images_path, train_labels_path, test_images_path, test_labels_path,
         train_images, train_labels, test_images, test_labels);
-    // Example setup: Define the architecture
-    NeuralNetwork nn({ 784, 128, 128, 10 });
-    // Load and preprocess Fashion MNIST dataset here.
-    // Use nn.train() to train the network.
-    nn.train(train_images, train_labels, 10, 32, 0.01);
+    //// Example setup: Define the architecture
+    //NeuralNetwork nn({ 784, 128, 128, 10 });
+    //// Load and preprocess Fashion MNIST dataset here.
+    //// Use nn.train() to train the network.
+    //nn.train(train_images, train_labels, 10, 32, 0.01);
 
-    double train_accuracy = evaluate(nn, train_images, train_labels);
-    double test_accuracy = evaluate(nn, test_images, test_labels);
 
-    std::cout << "Train Accuracy: " << train_accuracy * 100.0 << "%" << std::endl;
-    std::cout << "Test Accuracy: " << test_accuracy * 100.0 << "%" << std::endl;
+
+    //// Save the trained model
+    //save_model(nn, model_path);
+
+    //// Load the model to demonstrate persistence
+    NeuralNetwork loaded_nn({ 784, 128, 128, 10 });
+    load_model(loaded_nn, model_path);
+    
+
+    double train_accuracy = evaluate(loaded_nn, train_images, train_labels);
+    double test_accuracy = evaluate(loaded_nn, test_images, test_labels);
+
+    std::cout << "train accuracy: " << train_accuracy * 100.0 << "%" << std::endl;
+    std::cout << "test accuracy: " << test_accuracy * 100.0 << "%" << std::endl;
+
+    // Demonstrate predictions
+    demonstrate_predictions(loaded_nn, test_images, test_labels);
 
     return 0;
 }
