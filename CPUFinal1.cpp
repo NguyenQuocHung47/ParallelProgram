@@ -174,7 +174,9 @@ public:
     }
 
     void forward(const float* batch_input, int batch_size) {
-        inputs = const_cast<float*>(batch_input);
+        if (inputs) delete[] inputs; 
+        inputs = new float[batch_size * input_size];
+        memcpy(inputs, batch_input, batch_size * input_size * sizeof(float)); // Copy input data
         outputs = new float[batch_size * output_size]();
 
         for (int sample = 0; sample < batch_size; ++sample) {
@@ -187,7 +189,7 @@ public:
         }
     }
 
-    void backward(const float* batch_output_gradients, int batch_size, float learning_rate) {
+    void backward(const float* batch_output_gradients, int batch_size) {
         float* batch_input_gradients = new float[batch_size * input_size]();
 
         for (int sample = 0; sample < batch_size; ++sample) {
@@ -206,10 +208,14 @@ public:
                 batch_input_gradients[sample * input_size + j] = gradient * relu_derivative(inputs[sample * input_size + j]);
             }
         }
-
+        if (inputs) delete[] inputs;
+        inputs = new float[batch_size * input_size];
         inputs = batch_input_gradients; // Set gradients for propagation
 
-        // Update weights and biases
+        //delete[] batch_input_gradients;
+    }
+
+    void update_weights(float learning_rate, int batch_size) {
         for (int i = 0; i < output_size; ++i) {
             for (int j = 0; j < input_size; ++j) {
                 weights[i * input_size + j] -= learning_rate * weight_gradients[i * input_size + j] / batch_size;
@@ -218,8 +224,6 @@ public:
             biases[i] -= learning_rate * bias_gradients[i] / batch_size;
             bias_gradients[i] = 0.0;
         }
-
-        delete[] batch_input_gradients;
     }
 };
 
@@ -262,7 +266,7 @@ public:
         return activations;
     }
 
-    void backward(const float* predictions, const float* labels, int batch_size, int num_classes, float learning_rate) {
+    void backward(const float* predictions, const float* labels, int batch_size, int num_classes) {
         float* batch_output_gradients = new float[batch_size * num_classes];
         for (int sample = 0; sample < batch_size; ++sample) {
             for (int i = 0; i < num_classes; ++i) {
@@ -271,10 +275,16 @@ public:
         }
 
         for (int i = num_layers - 1; i >= 0; --i) {
-            layers[i]->backward(batch_output_gradients, batch_size, learning_rate);
+            layers[i]->backward(batch_output_gradients, batch_size);
             batch_output_gradients = layers[i]->inputs;
         }
-        delete[] batch_output_gradients;
+        //delete[] batch_output_gradients;
+    }
+
+    void update_weights(float learning_rate, int batch_size) {
+        for (int i = 0; i < num_layers; ++i) {
+            layers[i]->update_weights(learning_rate, batch_size);
+        }
     }
 
     void train(const float* data, const float* labels, int num_samples, int batch_size, int num_classes, int epochs, float learning_rate) {
@@ -289,123 +299,77 @@ public:
                 for (int j = 0; j < current_batch_size; ++j) {
                     total_loss += cross_entropy_loss(predictions + j * num_classes, batch_labels + j * num_classes, num_classes);
                 }
-                backward(predictions, batch_labels, current_batch_size, num_classes, learning_rate);
+                backward(predictions, batch_labels, current_batch_size, num_classes);
+                update_weights(learning_rate, current_batch_size);
             }
             cout << "Epoch " << epoch << " - Loss: " << total_loss / num_samples << endl;
         }
     }
+
+    // Save the model to a file
+    void save_model(const string& filepath) {
+        ofstream file(filepath, ios::binary);
+        if (!file.is_open()) throw runtime_error("Cannot open file to save model: " + filepath);
+
+        // Save the number of layers
+        file.write(reinterpret_cast<char*>(&num_layers), sizeof(num_layers));
+
+        for (int i = 0; i < num_layers; ++i) {
+            Layer* layer = layers[i];
+
+            // Save input_size and output_size
+            file.write(reinterpret_cast<char*>(&layer->input_size), sizeof(layer->input_size));
+            file.write(reinterpret_cast<char*>(&layer->output_size), sizeof(layer->output_size));
+
+            // Save weights
+            file.write(reinterpret_cast<char*>(layer->weights), layer->input_size * layer->output_size * sizeof(float));
+
+            // Save biases
+            file.write(reinterpret_cast<char*>(layer->biases), layer->output_size * sizeof(float));
+        }
+
+        file.close();
+        cout << "Model saved to " << filepath << endl;
+    }
+
+    // Load the model from a file
+    void load_model(const string& filepath) {
+        ifstream file(filepath, ios::binary);
+        if (!file.is_open()) throw runtime_error("Cannot open file to load model: " + filepath);
+
+        // Read the number of layers
+        int saved_num_layers;
+        file.read(reinterpret_cast<char*>(&saved_num_layers), sizeof(saved_num_layers));
+
+        // Ensure the architecture matches the saved model
+        if (saved_num_layers != num_layers) {
+            throw runtime_error("Saved model architecture does not match the current network.");
+        }
+
+        for (int i = 0; i < num_layers; ++i) {
+            Layer* layer = layers[i];
+
+            // Read input_size and output_size
+            int saved_input_size, saved_output_size;
+            file.read(reinterpret_cast<char*>(&saved_input_size), sizeof(saved_input_size));
+            file.read(reinterpret_cast<char*>(&saved_output_size), sizeof(saved_output_size));
+
+            if (saved_input_size != layer->input_size || saved_output_size != layer->output_size) {
+                throw runtime_error("Layer dimensions do not match the saved model.");
+            }
+
+            // Load weights
+            file.read(reinterpret_cast<char*>(layer->weights), layer->input_size * layer->output_size * sizeof(float));
+
+            // Load biases
+            file.read(reinterpret_cast<char*>(layer->biases), layer->output_size * sizeof(float));
+        }
+
+        file.close();
+        cout << "Model loaded from " << filepath << endl;
+    }
 };
 
-//
-//    vector<float> predict(const vector<float>& input) {
-//        vector<float> activations = input;
-//        for (size_t i = 0; i < layers.size(); ++i) {
-//            layers[i].forward({ activations }); // Wrap input in a batch of size 1
-//            activations = layers[i].outputs[0]; // Extract the single sample's output
-//            if (i < layers.size() - 1) {
-//                transform(activations.begin(), activations.end(), activations.begin(), relu);
-//            }
-//            else {
-//                softmax(activations);
-//            }
-//        }
-//        return activations;
-//    }
-//};
-//// Function to evaluate the model on a dataset
-//float evaluate(NeuralNetwork& model, const vector<vector<float>>& images,
-//    const vector<vector<float>>& labels) {
-//    int correct = 0;
-//
-//    for (size_t i = 0; i < images.size(); ++i) {
-//        vector <float> predicted = model.predict(images[i]);
-//        int predicted_class = distance(predicted.begin(), max_element(predicted.begin(), predicted.end()));
-//        int true_class = distance(labels[i].begin(), max_element(labels[i].begin(), labels[i].end()));
-//
-//        if (predicted_class == true_class) {
-//            ++correct;
-//        }
-//    }
-//
-//    return static_cast<float>(correct) / images.size(); // Return accuracy as a fraction
-//}
-//
-//// Function to save the model to a file
-//void save_model(const NeuralNetwork& model, const string& filepath) {
-//    ofstream file(filepath, ios::out | ios::binary);
-//    if (!file.is_open()) throw runtime_error("Cannot open file to save model: " + filepath);
-//
-//    for (const auto& layer : model.layers) {
-//        // Save weights
-//        for (const auto& row : layer.weights) {
-//            for (float weight : row) {
-//                file.write(reinterpret_cast<const char*>(&weight), sizeof(weight));
-//            }
-//        }
-//
-//        // Save biases
-//        for (float bias : layer.biases) {
-//            file.write(reinterpret_cast<const char*>(&bias), sizeof(bias));
-//        }
-//    }
-//
-//    file.close();
-//    cout << "Model saved to " << filepath << endl;
-//}
-//
-//// Function to load the model from a file
-//void load_model(NeuralNetwork& model, const string& filepath) {
-//    ifstream file(filepath, ios::in | ios::binary);
-//    if (!file.is_open()) throw runtime_error("Cannot open file to load model: " + filepath);
-//
-//    for (auto& layer : model.layers) {
-//        // Load weights
-//        for (auto& row : layer.weights) {
-//            for (float& weight : row) {
-//                file.read(reinterpret_cast<char*>(&weight), sizeof(weight));
-//            }
-//        }
-//
-//        // Load biases
-//        for (float& bias : layer.biases) {
-//            file.read(reinterpret_cast<char*>(&bias), sizeof(bias));
-//        }
-//    }
-//
-//    file.close();
-//    cout << "Model loaded from " << filepath << endl;
-//}
-
-// Helper function to display an image (assumes 28x28 grayscale)
-void display_image(const vector<float>& image) {
-    const int size = 28;
-    for (int i = 0; i < size; ++i) {
-        for (int j = 0; j < size; ++j) {
-            if (image[i * size + j] > 0.5) cout << "##"; // Threshold for visual representation
-            else cout << "..";
-        }
-        cout << endl;
-    }
-}
-//// demonstration: predict and display the first 10 samples
-//void demonstrate_predictions(neuralnetwork& model, const vector<vector<float>>& images,
-//    const vector<vector<float>>& labels) {
-//    const int num_samples = 20;
-//
-//    for (int i = 0; i < num_samples; ++i) {
-//        const auto& image = images[i];
-//        const auto& label = labels[i];
-//
-//        vector <float> predicted = model.predict(image);
-//        int predicted_class = distance(predicted.begin(), max_element(predicted.begin(), predicted.end()));
-//        int true_class = distance(label.begin(), max_element(label.begin(), label.end()));
-//
-//        cout << "sample " << i + 1 << ":" << endl;
-//        display_image(image);
-//        cout << "predicted label: " << predicted_class << ", actual label: " << true_class << endl;
-//        cout << "-----------------------------" << endl;
-//    }
-//}
 
 
 int main() {
@@ -434,7 +398,9 @@ int main() {
     NeuralNetwork nn(architecture);
 
     // Train the network
-    nn.train(train_images, train_labels, train_image_rows, 32, num_classes, 10, 0.01f);
+    nn.train(train_images, train_labels, train_image_rows, 16, num_classes, 10, 0.01f);
+    nn.save_model("model.bin");
+    nn.load_model("model.bin");
 
     // Evaluate accuracy
     float* test_predictions = nn.forward(test_images, test_image_rows);
