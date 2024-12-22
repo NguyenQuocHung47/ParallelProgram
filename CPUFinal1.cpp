@@ -394,7 +394,7 @@ int main() {
         image_cols, num_classes);
 
     // Define network architecture and create neural network
-    vector<int> architecture = { image_cols, 128, 64, num_classes };
+    vector<int> architecture = { image_cols, 128, 128, num_classes };
     NeuralNetwork nn(architecture);
 
     // Train the network
