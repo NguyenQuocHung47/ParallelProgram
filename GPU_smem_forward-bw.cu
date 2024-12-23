@@ -367,8 +367,9 @@ public:
         CHECK(cudaMemcpy(d_biases, biases, output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_weight_gradients, weight_gradients, input_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_bias_gradients, bias_gradients, output_size * sizeof(float), cudaMemcpyHostToDevice));
-
-        update_weights_kernel<<<output_size, input_size>>>(d_weights, d_biases, d_weight_gradients, d_bias_gradients, learning_rate, input_size, output_size, batch_size);
+        dim3 threads(128);
+        dim3 blocks((output_size + threads.x - 1) / threads.x);
+        update_weights_kernel<<<blocks,threads>>>(d_weights, d_biases, d_weight_gradients, d_bias_gradients, learning_rate, input_size, output_size, batch_size);
         CHECK(cudaDeviceSynchronize());
 
         CHECK(cudaMemcpy(weights, d_weights, input_size * output_size * sizeof(float), cudaMemcpyDeviceToHost));
