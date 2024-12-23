@@ -133,7 +133,7 @@ void load_and_preprocess_dataset_csv(const string& train_images_path,
         train_labels = load_labels_csv(train_labels_path, train_label_rows, num_classes);
 
         // Load test images and normalize
-        test_images = load_csv(test_images_path, test_image_rows, image_cols, false);
+        test_images = load_csv(test_images_path, test_image_rows, image_cols, true);
 
         // Load test labels and one-hot encode
         test_labels = load_labels_csv(test_labels_path, test_label_rows, num_classes);
