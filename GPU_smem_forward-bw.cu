@@ -178,6 +178,8 @@ float cross_entropy_loss(const float* predictions, const float* labels, int size
     }
     return loss;
 }
+// CUDA kernel for forward pass
+// Forward pass kernel for the first layer
 __global__ void forward_kernel1(const float* inputs, float* outputs, const float* weights, const float* biases,
                                 int input_size, int output_size, int batch_size) {
     extern __shared__ float shared_inputs[];
@@ -185,9 +187,10 @@ __global__ void forward_kernel1(const float* inputs, float* outputs, const float
     
         int sample_idx = blockIdx.x;
         int neuron_idx = threadIdx.x;
-
-        if (threadIdx.x < input_size) {
-            shared_inputs[threadIdx.x] = inputs[sample_idx * input_size + threadIdx.x];
+        for(int i=0;i<(input_size+output_size-1)/output_size;i++){
+            if (threadIdx.x + output_size * i< input_size) {
+                shared_inputs[threadIdx.x + output_size * i] = inputs[sample_idx * input_size + threadIdx.x + output_size * i];
+            }
         }
         __syncthreads();
         if(sample_idx<batch_size && neuron_idx<output_size){
@@ -198,7 +201,6 @@ __global__ void forward_kernel1(const float* inputs, float* outputs, const float
             outputs[sample_idx*output_size+neuron_idx] = sum;
         }
 }
-
 // ...existing code...
 __global__ void backward_kernel(const float* output_gradients, const float* weights,
                                  float* input_gradients, float* weight_gradients,
@@ -302,7 +304,7 @@ public:
         //CHECK(cudaMemcpy(d_output, outputs, batch_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_weights, weights, input_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_biases, biases, output_size * sizeof(float), cudaMemcpyHostToDevice));
-        int threads = input_size;
+        int threads = output_size;
         int blocks = (batch_size);
         int shared_memory_size = input_size * sizeof(float);
         forward_kernel1<<<blocks, threads, shared_memory_size>>>(d_input, d_output, d_weights, d_biases, input_size, output_size, batch_size);
