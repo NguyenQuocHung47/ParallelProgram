@@ -20,7 +20,42 @@ using namespace std;
 		exit(EXIT_FAILURE); \
 	} \
 }
+struct GpuTimer
+{
+    cudaEvent_t start;
+    cudaEvent_t stop;
 
+    GpuTimer()
+    {
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+    }
+
+    ~GpuTimer()
+    {
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
+    }
+
+    void Start()
+    {
+        cudaEventRecord(start, 0);
+        cudaEventSynchronize(start);
+    }
+
+    void Stop()
+    {
+        cudaEventRecord(stop, 0);
+    }
+
+    float Elapsed()
+    {
+        float elapsed;
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&elapsed, start, stop);
+        return elapsed;
+    }
+};
 // Function to parse a CSV file into a pointer array
 float* load_csv(const string& filepath, int& rows, int& cols, bool normalize = false) {
     ifstream file(filepath);
@@ -318,7 +353,9 @@ public:
         CHECK(cudaMemcpy(d_weight_gradients, weight_gradients, input_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_bias_gradients, bias_gradients, output_size * sizeof(float), cudaMemcpyHostToDevice));
 
-        update_weights_kernel<<<output_size, input_size>>>(d_weights, d_biases, d_weight_gradients, d_bias_gradients, learning_rate, input_size, output_size, batch_size);
+        dim3 threads(128);
+        dim3 blocks((output_size + threads.x - 1) / threads.x);
+        update_weights_kernel<<<blocks,threads>>>(d_weights, d_biases, d_weight_gradients, d_bias_gradients, learning_rate, input_size, output_size, batch_size);
         CHECK(cudaDeviceSynchronize());
 
         CHECK(cudaMemcpy(weights, d_weights, input_size * output_size * sizeof(float), cudaMemcpyDeviceToHost));
@@ -504,7 +541,12 @@ int main() {
     NeuralNetwork nn(architecture);
 
     // Train the network
+    GpuTimer timer;
+    timer.Start();
     nn.train(train_images, train_labels, train_image_rows, 16, num_classes, 10, 0.01f);
+    timer.Stop();
+    float time = timer.Elapsed();
+    cout << "Processing time: " << time << " ms" << endl;
     nn.save_model("model.bin");
     NeuralNetwork nn1(architecture);
 
