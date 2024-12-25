@@ -181,6 +181,7 @@ float cross_entropy_loss(const float* predictions, const float* labels, int size
 // CUDA kernel for forward pass
 // Define constant memory for biases
 __constant__ float c_biases[128]; // Adjust size as needed
+__constant__ float c_bias_gradients[128]; // Adjust size as needed
 
 // CUDA kernel for forward pass
 __global__ void forward_kernel1(const float* inputs, float* outputs, const float* weights, int input_size, int output_size, int batch_size) {
@@ -200,42 +201,9 @@ __global__ void forward_kernel1(const float* inputs, float* outputs, const float
         outputs[sample_idx * output_size + neuron_idx] = sum;
     }
 }
-// ...existing code...
-__global__ void backward_kernel(const float* output_gradients, const float* weights,
-                                 float* input_gradients, float* weight_gradients,
-                                 float* bias_gradients, const float* inputs,
-                                 int input_size, int output_size, int batch_size) {
-    extern __shared__ float shared_output_gradients[];
-
-    int sample = blockIdx.y;
-    int input_idx = threadIdx.x + blockIdx.x * blockDim.x;
-
-    if (threadIdx.x < output_size) {
-        shared_output_gradients[threadIdx.x] = output_gradients[sample * output_size + threadIdx.x];
-    }
-    __syncthreads();
-
-    if (input_idx < input_size && sample < batch_size) {
-        float gradient = 0.0;
-        for (int i = 0; i < output_size; ++i) {
-            float output_gradient = shared_output_gradients[i];
-            gradient += output_gradient * weights[i * input_size + input_idx];
-
-            // Accumulate weight gradients
-            atomicAdd(&weight_gradients[i * input_size + input_idx], output_gradient * inputs[sample * input_size + input_idx]);
-
-            // Accumulate bias gradients
-            if (threadIdx.x == 0) atomicAdd(&bias_gradients[i], output_gradient);
-        }
-        gradient *= (inputs[sample * input_size + input_idx] > 0) ? 1.0f : 0.0f; // relu_derivative
-        // Accumulate input gradients
-        atomicAdd(&input_gradients[sample * input_size + input_idx], gradient);
-    }
-}
 __global__ void backward_kernel2(const float* output_gradients, const float* weights,
                                  float* input_gradients, float* weight_gradients,
-                                 float* bias_gradients, const float* inputs,
-                                 int input_size, int output_size, int batch_size) {
+                                 const float* inputs, int input_size, int output_size, int batch_size) {
     extern __shared__ float shared_output_gradients[];
 
     int sample = blockIdx.y;
@@ -262,61 +230,29 @@ __global__ void backward_kernel2(const float* output_gradients, const float* wei
 
     if (threadIdx.x == 0) {
         for (int i = 0; i < output_size; ++i) {
-            atomicAdd(&bias_gradients[i], shared_output_gradients[i]);
+            atomicAdd(&c_bias_gradients[i], shared_output_gradients[i]);
         }
     }
 }
 
-__global__ void backward_kernel1(const float* batch_output_gradients, const float* inputs, const float* weights, 
-                                float* weight_gradients, float* bias_gradients, float* batch_input_gradients, 
-                                int input_size, int output_size, int batch_size) {
-    extern __shared__ float shared_mem[];
-    float* shared_inputs = shared_mem;
-    float* shared_output_gradients = shared_mem + input_size;
 
-    int sample = blockIdx.x;
-    int i = threadIdx.x;
-    // for (int j=0;j<(input_size+output_size-1)/output_size;++j)
-    // {
-    //     int k=i*((input_size+output_size-1)/output_size)+j;
-    //     if (k < input_size) {
-    //         shared_inputs[k] = inputs[sample * input_size + k];
-    //     }
-    // }
-    if (i < input_size) {
-        shared_inputs[i] = inputs[sample * input_size + i];
-    }
-    if (i < output_size) {
-        shared_output_gradients[i] = batch_output_gradients[sample * output_size + i];
-    }
-    __syncthreads();
 
-    if (sample < batch_size && i < output_size) {
-        for (int j = 0; j < input_size; ++j) {
-            atomicAdd(&weight_gradients[i * input_size + j], shared_output_gradients[i] * shared_inputs[j]);
-        }
-        atomicAdd(&bias_gradients[i], shared_output_gradients[i]);
-
-        float gradient = 0.0;
-        for (int k = 0; k < output_size; ++k) {
-            gradient += shared_output_gradients[k] * weights[k * input_size + i];
-        }
-        batch_input_gradients[sample * input_size + i] = gradient * (shared_inputs[i] > 0 ? 1.0f : 0.0f); // relu_derivative
-    }
-}
-// ...existing code...
 
 // CUDA kernel for weight updates
 __global__ void update_weights_kernel(float* weights, float* biases, const float* weight_gradients,
-                                       const float* bias_gradients, float learning_rate,
-                                       int input_size, int output_size, int batch_size) {
-    int neuron = threadIdx.x + blockIdx.x * blockDim.x;
+                                       const float* bias_gradients, float lrDivBatchSize,
+                                       int input_size, int output_size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int neuron = idx / input_size;
+    int input = idx % input_size;
+    if (input < input_size)
+    {
+        weights[neuron * input_size + input] -= lrDivBatchSize * weight_gradients[neuron * input_size + input];
+    }
 
-    if (neuron < output_size) {
-        for (int i = 0; i < input_size;++i) {
-            weights[neuron * input_size + i] -= learning_rate * weight_gradients[neuron * input_size + i] / batch_size;
-        }
-        biases[neuron] -= learning_rate * bias_gradients[neuron] / batch_size;
+    if (idx % input_size == 0)
+    {
+        biases[neuron] -= lrDivBatchSize * bias_gradients[neuron];
     }
 }
 // Updated Layer class to handle batches
@@ -415,19 +351,19 @@ public:
         CHECK(cudaMemcpy(d_input, inputs, batch_size * input_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_weights, weights, input_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_weight_gradients, weight_gradients, input_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
-        CHECK(cudaMemcpy(d_bias_gradients, bias_gradients, output_size * sizeof(float), cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpyToSymbol(c_bias_gradients, bias_gradients, output_size * sizeof(float)));
         CHECK(cudaMemset(d_batch_input_gradients, 0, batch_size * input_size * sizeof(float)));
 
         dim3 blocks(1,batch_size);
         dim3 threads(input_size);
 
-        backward_kernel2<<<blocks, threads, output_size * sizeof(float)>>>(d_batch_output_gradients, d_weights, d_batch_input_gradients, d_weight_gradients, d_bias_gradients, d_input, input_size, output_size, batch_size);
+        backward_kernel2<<<blocks, threads, output_size * sizeof(float)>>>(d_batch_output_gradients, d_weights, d_batch_input_gradients, d_weight_gradients, d_input, input_size, output_size, batch_size);
 
         CHECK(cudaGetLastError());
         CHECK(cudaDeviceSynchronize());
 
         CHECK(cudaMemcpy(weight_gradients, d_weight_gradients, input_size * output_size * sizeof(float), cudaMemcpyDeviceToHost));
-        CHECK(cudaMemcpy(bias_gradients, d_bias_gradients, output_size * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK(cudaMemcpyFromSymbol(bias_gradients, c_bias_gradients, output_size * sizeof(float)));
         CHECK(cudaMemcpy(inputs, d_batch_input_gradients, batch_size * input_size * sizeof(float), cudaMemcpyDeviceToHost));
 
         CHECK(cudaFree(d_batch_output_gradients));
@@ -435,15 +371,15 @@ public:
 
     void update_weights(float learning_rate, int batch_size) {
    
-       
+        float lrDivBatchSize = learning_rate / batch_size;
         CHECK(cudaMemcpy(d_weights, weights, input_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_biases, biases, output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_weight_gradients, weight_gradients, input_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_bias_gradients, bias_gradients, output_size * sizeof(float), cudaMemcpyHostToDevice));
 
         dim3 threads(128);
-        dim3 blocks((output_size + threads.x - 1) / threads.x);
-        update_weights_kernel<<<blocks, threads>>>(d_weights, d_biases, d_weight_gradients, d_bias_gradients, learning_rate, input_size, output_size, batch_size);
+        dim3 blocks((output_size * input_size + threads.x - 1) / threads.x);
+        update_weights_kernel<<<blocks, threads>>>(d_weights, d_biases, d_weight_gradients, d_bias_gradients, lrDivBatchSize, input_size, output_size);
 
         CHECK(cudaDeviceSynchronize());
 
