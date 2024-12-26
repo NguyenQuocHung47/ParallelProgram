@@ -225,7 +225,7 @@ __global__ void backward_kernel2(const float* output_gradients, const float* wei
             // Accumulate weight gradients
             atomicAdd(&weight_gradients[i * input_size + input_idx], shared_output_gradients[i] * input);
         }
-        if (input >= 0) {
+        if (input > 0) {
             for (int i = 0; i < output_size; ++i) {
                 gradient += shared_output_gradients[i] * weights[i * input_size + input_idx];
             }
@@ -536,7 +536,14 @@ public:
     }
 };
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        cerr << "Usage: " << argv[0] << " <batch_size>" << endl;
+        return 1;
+    }
+
+    int batch_size = stoi(argv[1]);
+
     float* train_images;
     float* train_labels;
     float* test_images;
@@ -563,7 +570,7 @@ int main() {
 
     GpuTimer timer;
     timer.Start();
-    nn.train(train_images, train_labels, train_image_rows, 16, num_classes, 10, 0.01f);
+    nn.train(train_images, train_labels, train_image_rows, batch_size, num_classes, 10, 0.01f);
     timer.Stop();
     float time = timer.Elapsed();
     cout << "Processing time: " << time << " ms" << endl;
