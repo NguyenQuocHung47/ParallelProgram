@@ -204,6 +204,7 @@ __global__ void forward_kernel1(const float* inputs, float* outputs, const float
     }
 }
 
+
 // CUDA kernel for backward pass
 __global__ void backward_kernel2(const float* output_gradients, const float* weights,
                                  float* input_gradients, float* weight_gradients,
@@ -262,12 +263,13 @@ public:
     float* weights;
     float* biases;
     float* outputs = nullptr;
-    float* inputs=nullptr;
+    float* inputs= nullptr;
     float* d_input;
     float* d_output;
     float* d_weights;
     float* d_weight_gradients;
     float* d_bias_gradients;
+    float* d_batch_input_gradients;
     float* d_biases;
     int input_size, output_size;
 
@@ -285,13 +287,13 @@ public:
         delete[] weights;
         delete[] biases;
 
-        CHECK(cudaFree(d_input));
-        CHECK(cudaFree(d_output));
+        //CHECK(cudaFree(d_input));
+        //CHECK(cudaFree(d_output));
         CHECK(cudaFree(d_weights));
         CHECK(cudaFree(d_biases));
         CHECK(cudaFree(d_weight_gradients));
         CHECK(cudaFree(d_bias_gradients));
-     
+        CHECK(cudaFree(d_batch_input_gradients));
     }
 
     void initialize_weights() {
@@ -305,20 +307,23 @@ public:
 
     void cuda_malloc(int batch_size) {
         CHECK(cudaMalloc(&d_biases, output_size * sizeof(float)));
-        CHECK(cudaMalloc(&d_input, batch_size * input_size * sizeof(float)));
-        CHECK(cudaMalloc(&d_output, batch_size * output_size * sizeof(float)));
+        //CHECK(cudaMalloc(&d_input, batch_size * input_size * sizeof(float)));
+        //CHECK(cudaMalloc(&d_output, batch_size * output_size * sizeof(float)));
         CHECK(cudaMalloc(&d_weights, input_size * output_size * sizeof(float)));
         CHECK(cudaMalloc(&d_weight_gradients, input_size * output_size * sizeof(float)));
         CHECK(cudaMalloc(&d_bias_gradients, output_size * sizeof(float)));
+        CHECK(cudaMalloc(&d_batch_input_gradients, batch_size * input_size * sizeof(float)));
         CHECK(cudaMemcpy(d_weights, weights, input_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpy(d_biases, biases, output_size * sizeof(float), cudaMemcpyHostToDevice));
     }
 
     void forward(const float* batch_input, int batch_size) {
         if(inputs == nullptr) inputs = new float[batch_size * input_size];
-        //inputs = new float[batch_size * input_size];
-        memcpy(inputs, batch_input, batch_size * input_size * sizeof(float)); // Copy input data
+        
+        CHECK(cudaMalloc(&d_input, batch_size * input_size * sizeof(float)));
+        CHECK(cudaMalloc(&d_output, batch_size * output_size * sizeof(float)));
 
+        memcpy(inputs, batch_input, batch_size * input_size * sizeof(float)); // Copy input data
         CHECK(cudaMemcpy(d_input, inputs, batch_size * input_size * sizeof(float), cudaMemcpyHostToDevice));
         CHECK(cudaMemcpyToSymbol(c_biases, d_biases, output_size * sizeof(float)));
 
@@ -333,12 +338,15 @@ public:
 
         if (outputs == nullptr) outputs = new float[batch_size * output_size];
         CHECK(cudaMemcpy(outputs, d_output, batch_size * output_size * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK(cudaFree(d_input));
+        CHECK(cudaFree(d_output));
     }
 
     void backward(const float* batch_output_gradients, int batch_size) {
-
+        CHECK(cudaMalloc(&d_input, batch_size * input_size * sizeof(float)));
+        CHECK(cudaMalloc(&d_output, batch_size * output_size * sizeof(float)));
         CHECK(cudaMemcpy(d_output, batch_output_gradients, batch_size * output_size * sizeof(float), cudaMemcpyHostToDevice));
-
+        CHECK((cudaMemcpy(d_input, inputs, batch_size * input_size * sizeof(float), cudaMemcpyHostToDevice)));
         //CHECK(cudaMemset(d_batch_input_gradients, 0, batch_size * input_size * sizeof(float)));
         cudaMemset(d_weight_gradients, 0, input_size * output_size * sizeof(float));
         cudaMemset(d_bias_gradients, 0, output_size * sizeof(float));
@@ -351,8 +359,9 @@ public:
         CHECK(cudaGetLastError());
         CHECK(cudaDeviceSynchronize());
 
-        //CHECK(cudaMemcpy(inputs, d_batch_input_gradients, batch_size * input_size * sizeof(float), cudaMemcpyDeviceToHost));
         CHECK(cudaMemcpy(inputs, d_input, batch_size * input_size * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK(cudaFree(d_input));
+        CHECK(cudaFree(d_output));
     }
 
     void update_weights(float learning_rate, int batch_size) {
